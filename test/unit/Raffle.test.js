@@ -130,4 +130,66 @@ const {
           assert(raffleState.toString() == "1");
         });
       });
+
+      describe("fulfillRandomWords", function () {
+        beforeEach(async function () {
+          await raffle.enterRaffle({ value: raffleEntranceFee });
+          await network.provider.send("evm_increaseTime", [
+            interval.toNumber() + 1,
+          ]);
+          await network.provider.request({ method: "evm_mine", params: [] });
+        });
+
+        it("can only be called after performUpkeep", async function () {
+          //Can use fuzz testing for different values of requestId
+          await expect(
+            vrfCoordinatorV2Mock.fulfillRandomWords(0, raffle.address)
+          ).to.be.revertedWith("nonexistent request");
+          await expect(
+            vrfCoordinatorV2Mock.fulfillRandomWords(1, raffle.address)
+          ).to.be.revertedWith("nonexistent request");
+        });
+        it("picks a winner, resets the lottery and send the money to the winner", async function () {
+          const additionalEntrance = 3;
+          const startingAccountIndex = 1; // as deployer = 0
+          const accounts = await ethers.getSigners();
+
+          for (
+            let i = startingAccountIndex;
+            i < startingAccountIndex + additionalEntrance;
+            i++
+          ) {
+            const accountConnectedRaffle = raffle.connect(accounts[i]);
+            await accountConnectedRaffle.enterRaffle({
+              value: raffleEntranceFee,
+            });
+          }
+          const startingTimeStamp = await raffle.getLatestTimeStamp();
+
+          await new Promise(async (resolve, reject) => {
+            /* This is listener */ raffle.once("WinnerPicked", async () => {
+              console.log("Event emitted!");
+              try {
+                const recentWinner = await raffle.getRecentWinner();
+                const raffleState = await raffle.getRaffleState();
+                const endingTimeStamp = await raffle.getLatestTimeStamp();
+                const numPlayers = await raffle.getNumberOfPlayers();
+                assert.equal(numPlayers.toString(), "0");
+                assert.equal(raffleState.toString(), "0");
+                assert(endingTimeStamp > startingTimeStamp);
+              } catch (e) {
+                reject(e);
+              }
+              resolve();
+            }); //mocha timeout is 200 seconds, so if event "WinnerPicked" is not fired within 200 seconds the Promise is failure and test fails
+            //here we will fire the event required for listener to resolve the promise
+            const tx = await raffle.performUpkeep([]);
+            const txReceipt = await tx.wait(1);
+            await vrfCoordinatorV2Mock.fulfillRandomWords(
+              txReceipt.events[1].args.requestId,
+              raffle.address
+            );
+          });
+        });
+      });
     });
